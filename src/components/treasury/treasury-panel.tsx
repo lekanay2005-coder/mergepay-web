@@ -19,7 +19,6 @@ import { AssetBadge } from "@/components/asset-badge";
 import { PubkeyChip, TxLink } from "@/components/tx-link";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Avatar } from "@/components/ui/avatar";
 import { StrKey } from "@/lib/strkey";
 import {
   useEnableTreasury,
@@ -29,9 +28,15 @@ import {
   useTreasuryWithdraw,
 } from "@/lib/queries";
 import { api, ApiRequestError } from "@/lib/api";
-import { signAndConfirmTreasuryTx, WalletError } from "@/lib/stellar";
+import {
+  signAndConfirmTreasuryTx,
+  WalletError,
+  WalletNotInstalledError,
+  NotInstalledMessage,
+} from "@/lib/stellar";
 import { SETTLEMENT_ASSETS, STABLE_ASSET } from "@/lib/constants";
 import { fullDate } from "@/lib/format";
+import { validateAmount, normalizeAmount, exceedsBalance } from "@/lib/money";
 import type { Group, GroupDetail } from "@/lib/types";
 
 export function TreasuryPanel({
@@ -75,6 +80,34 @@ export function TreasuryPanel({
     );
   }
 
+  if (info.isError || history.isError) {
+    return (
+      <EmptyState
+        icon={<Landmark className="h-7 w-7 text-red-500" />}
+        title="Error loading treasury"
+        description="We couldn't load the treasury balances or activity."
+        action={
+          <Button
+            onClick={() => {
+              info.refetch();
+              history.refetch();
+            }}
+            variant="outline"
+          >
+            Retry
+          </Button>
+        }
+      />
+    );
+  }
+
+  const isMisconfigured = !!(
+    info.data &&
+    info.data.thresholds &&
+    group.treasuryRequiredSigners &&
+    info.data.thresholds.med !== group.treasuryRequiredSigners
+  );
+
   return (
     <div className="space-y-6">
       <Card>
@@ -85,13 +118,21 @@ export function TreasuryPanel({
               Shared treasury
             </span>
           </div>
-          {group.treasuryRequiredSigners && group.treasuryRequiredSigners > 1 && (
-            <Badge tone="ink">
-              <ShieldCheck className="h-3 w-3" /> {group.treasuryRequiredSigners}-of-N multisig
+          {group.treasuryRequiredSigners && group.treasuryRequiredSigners > 1 && info.data?.signers && (
+            <Badge tone={isMisconfigured ? "flamingo" : "ink"}>
+              <ShieldCheck className="h-3 w-3" /> {group.treasuryRequiredSigners}-of-{info.data.signers.length} multisig
             </Badge>
           )}
         </div>
         <CardContent className="space-y-4 pt-4">
+          {info.data && isMisconfigured && (
+            <div className="rounded-xl border-2 border-flamingo bg-flamingo-pale px-4 py-3 text-xs">
+              ⚠ Treasury misconfigured: on-chain thresholds require{" "}
+              {info.data.thresholds.med} signers, but Mergepay expects{" "}
+              {group.treasuryRequiredSigners}. Update signer weights & thresholds
+              in your wallet.
+            </div>
+          )}
           {group.treasuryAccountPublicKey && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-display text-[10px] uppercase tracking-widest text-ink/50">
@@ -218,6 +259,7 @@ export function TreasuryPanel({
         open={withdrawOpen}
         onClose={() => setWithdrawOpen(false)}
         groupId={group.id}
+        balances={info.data?.balances ?? []}
       />
     </div>
   );
@@ -280,9 +322,18 @@ function EnableTreasuryDialog({
             value={requiredSigners}
             onChange={(e) => setRequiredSigners(e.target.value)}
           >
-            <option value="1">1 — single signer</option>
-            <option value="2">2 — dual control</option>
-            <option value="3">3 — multisig</option>
+            {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+              <option key={n} value={String(n)}>
+                {n} —{" "}
+                {n === 1
+                  ? "single signer"
+                  : n === 2
+                    ? "dual control"
+                    : n === 3
+                      ? "multisig"
+                      : `${n} signers`}
+              </option>
+            ))}
           </Select>
           <FieldHint>
             Set signer weights & thresholds on the account in your wallet to match.
@@ -317,11 +368,18 @@ function DepositDialog({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    // Validate and normalise: catches exponential notation, >7 dp, zero, negative.
+    const amountError = validateAmount(amount);
+    if (amountError) {
+      toast.error(amountError);
+      return;
+    }
+    const normalised = normalizeAmount(amount);
     const asset = SETTLEMENT_ASSETS.find((a) => a.code === assetKey)!;
     setBusy(true);
     try {
       const intent = await deposit.mutateAsync({
-        amount,
+        amount: normalised,
         assetCode: asset.code,
         assetIssuer: asset.issuer,
       });
@@ -334,7 +392,8 @@ function DepositDialog({
       onClose();
       setAmount("");
     } catch (e) {
-      if (e instanceof WalletError) toast.error(e.message);
+      if (e instanceof WalletNotInstalledError) toast.error(<NotInstalledMessage />);
+      else if (e instanceof WalletError) toast.error(e.message);
       else if (e instanceof ApiRequestError) toast.error(e.message);
       else toast.error("Deposit failed");
     } finally {
@@ -350,12 +409,10 @@ function DepositDialog({
             <Label htmlFor="d-amt">Amount</Label>
             <Input
               id="d-amt"
-              type="number"
-              min="0"
-              step="0.0000001"
+              inputMode="decimal"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.00"
+              placeholder="0.0000000"
               autoFocus
             />
           </div>
@@ -385,10 +442,13 @@ function WithdrawDialog({
   open,
   onClose,
   groupId,
+  balances,
 }: {
   open: boolean;
   onClose: () => void;
   groupId: string;
+  /** Treasury balances from TreasuryInfoResponse — used for client-side guard. */
+  balances: { assetCode: string; assetIssuer: string | null; balance: string }[];
 }) {
   const withdraw = useTreasuryWithdraw(groupId);
   const [amount, setAmount] = useState("");
@@ -402,11 +462,27 @@ function WithdrawDialog({
       toast.error("Enter a valid destination public key.");
       return;
     }
+    // Validate and normalise: catches exponential notation, >7 dp, zero, negative.
+    const amountError = validateAmount(amount);
+    if (amountError) {
+      toast.error(amountError);
+      return;
+    }
+    const normalised = normalizeAmount(amount);
+    // Client-side balance guard — blocks signing before an opaque Horizon failure.
+    const treasuryBalance = balances.find((b) => b.assetCode === assetKey);
+    if (!treasuryBalance || exceedsBalance(normalised, treasuryBalance.balance)) {
+      const available = treasuryBalance?.balance ?? "0";
+      toast.error(
+        `Insufficient treasury balance. Available: ${available} ${assetKey}.`
+      );
+      return;
+    }
     const asset = SETTLEMENT_ASSETS.find((a) => a.code === assetKey)!;
     setBusy(true);
     try {
       const intent = await withdraw.mutateAsync({
-        amount,
+        amount: normalised,
         assetCode: asset.code,
         assetIssuer: asset.issuer,
         destination: destination.trim(),
@@ -426,7 +502,8 @@ function WithdrawDialog({
       setAmount("");
       setDestination("");
     } catch (e) {
-      if (e instanceof WalletError) toast.error(e.message);
+      if (e instanceof WalletNotInstalledError) toast.error(<NotInstalledMessage />);
+      else if (e instanceof WalletError) toast.error(e.message);
       else if (e instanceof ApiRequestError) toast.error(e.message);
       else toast.error("Withdrawal failed");
     } finally {
@@ -442,12 +519,10 @@ function WithdrawDialog({
             <Label htmlFor="w-amt">Amount</Label>
             <Input
               id="w-amt"
-              type="number"
-              min="0"
-              step="0.0000001"
+              inputMode="decimal"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.00"
+              placeholder="0.0000000"
               autoFocus
             />
           </div>
