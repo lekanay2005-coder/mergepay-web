@@ -8,20 +8,7 @@ const fakeUser = {
   createdAt: "2024-01-01T00:00:00.000Z",
 };
 
-test("user can create a group and navigate to its page", async ({ page }) => {
-  await page.addInitScript(({ user }) => {
-    localStorage.setItem(
-      "mergepay.token",
-      JSON.stringify({
-        state: {
-          token: "dev-test-token",
-          user,
-        },
-        version: 1,
-      })
-    );
-  }, fakeUser);
-
+test("user can navigate from the landing page and create a group", async ({ page }) => {
   await page.route("**/me", async (route) => {
     await route.fulfill({
       status: 200,
@@ -98,6 +85,20 @@ test("user can create a group and navigate to its page", async ({ page }) => {
     });
   });
 
+  await page.goto("/");
+
+  await expect(
+    page.getByRole("heading", { name: /split bills\. settle on stellar\./i })
+  ).toBeVisible();
+  await page.getByRole("link", { name: /launch app/i }).first().click();
+
+  await expect(page).toHaveURL(/\/login$/);
+  await page.evaluate((user) => {
+    localStorage.setItem(
+      "mergepay.token",
+      JSON.stringify({ state: { token: "dev-test-token", user }, version: 1 })
+    );
+  }, fakeUser);
   await page.goto("/dashboard");
 
   await expect(page).toHaveURL(/\/dashboard$/);
