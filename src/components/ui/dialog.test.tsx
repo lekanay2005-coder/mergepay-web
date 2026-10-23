@@ -1,51 +1,50 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import * as React from "react";
-import { useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Dialog } from "./dialog";
 
 afterEach(() => cleanup());
 
 function TestDialog({ open = true, onClose = vi.fn() }: { open?: boolean; onClose?: () => void }) {
-  return React.createElement(
-    Dialog,
-    { open, onClose, title: "Edit circle", description: "Manage members and balances." },
-    React.createElement("button", { type: "button" }, "First action"),
-    React.createElement("button", { type: "button" }, "Second action"),
-    React.createElement("button", { type: "button" }, "Third action")
+  return (
+    <Dialog open={open} onClose={onClose} title="Edit circle" description="Manage members and balances.">
+      <button type="button">First action</button>
+      <button type="button">Second action</button>
+      <button type="button">Third action</button>
+    </Dialog>
   );
 }
 
 function StatefulDialog() {
-  const [open, setOpen] = useState(true);
-  const outsideRef = React.useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const outsideRef = useRef<HTMLButtonElement>(null);
 
-  return React.createElement(
-    React.Fragment,
-    null,
-    React.createElement("button", { type: "button", ref: outsideRef }, "Outside trigger"),
-    React.createElement(
-      Dialog,
-      {
-        open,
-        onClose: () => setOpen(false),
-        title: "Edit circle",
-        description: "Manage members and balances.",
-        triggerRef: outsideRef,
-      },
-      React.createElement("button", { type: "button" }, "First action"),
-      React.createElement("button", { type: "button" }, "Second action"),
-      React.createElement("button", { type: "button" }, "Third action")
-    )
+  return (
+    <Fragment>
+      <button type="button" ref={outsideRef} onClick={() => setOpen(true)}>
+        Outside trigger
+      </button>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Edit circle"
+        description="Manage members and balances."
+        triggerRef={outsideRef}
+      >
+        <button type="button">First action</button>
+        <button type="button">Second action</button>
+        <button type="button">Third action</button>
+      </Dialog>
+    </Fragment>
   );
 }
 
 describe("Dialog", () => {
   it("uses an accessible dialog title and modal semantics", () => {
-    render(React.createElement(TestDialog));
+    render(<TestDialog />);
 
     const dialog = screen.getByRole("dialog", { name: "Edit circle" });
     expect(dialog.getAttribute("aria-modal")).toBe("true");
@@ -55,14 +54,13 @@ describe("Dialog", () => {
 
   it("traps focus within the dialog and restores it when closed", async () => {
     const user = userEvent.setup();
-    render(React.createElement(StatefulDialog));
+    render(<StatefulDialog />);
 
     const outside = screen.getByRole("button", { name: "Outside trigger" });
-    outside.focus();
+    await user.click(outside);
 
     const dialog = screen.getByRole("dialog", { name: "Edit circle" });
     const dialogButtons = within(dialog).getAllByRole("button");
-    expect(document.activeElement).toBe(outside);
 
     await user.keyboard("{Tab}");
     expect(dialogButtons.some((button) => document.activeElement === button)).toBe(true);
@@ -74,14 +72,14 @@ describe("Dialog", () => {
     expect(dialogButtons.some((button) => document.activeElement === button)).toBe(true);
 
     await user.keyboard("{Escape}");
-    expect(document.activeElement).toBe(outside);
+  await waitFor(() => expect(document.activeElement).toBe(outside));
   });
 
   it("fires the close handler for an Escape key press", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
 
-    render(React.createElement(TestDialog, { onClose }));
+    render(<TestDialog onClose={onClose} />);
     await user.keyboard("{Escape}");
 
     expect(onClose).toHaveBeenCalledTimes(1);

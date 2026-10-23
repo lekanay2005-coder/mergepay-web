@@ -116,7 +116,7 @@ export function Dialog({
       if (dialogCount <= 0) document.body.style.overflow = "";
       requestAnimationFrame(() => previousFocusRef.current?.focus());
     };
-  }, [open, handleKeyDown, getFocusableElements]);
+  }, [open, handleKeyDown, getFocusableElements, triggerRef]);
 
   if (typeof document === "undefined") return null;
 
